@@ -6,6 +6,10 @@ import type {
   AgentRunTrigger,
   PrPolicy,
 } from "@superlog/db";
+import type {
+  AGENT_CONTENT_BOUNDARY_VERSION,
+  UntrustedJsonValue,
+} from "./agent-content-boundary.js";
 import type { AgentRunFindings, ExecutedAction } from "./agent-outcome-tools.js";
 
 export type AgentRunnerRepoCandidate = {
@@ -145,6 +149,12 @@ export type AgentRunnerStartInput = {
   predecessors: AgentRunnerPredecessorIncident[];
 };
 
+export type AgentRunnerModelStartInput = Omit<AgentRunnerStartInput, "issueSummaries"> & {
+  // Complete summaries are serialized into opaque boundary envelopes once,
+  // avoiding per-field prompt overhead while preserving nested data keys.
+  issueSummaries: UntrustedJsonValue[];
+};
+
 // A pending outcome-action tool call handed to the worker's executor by the
 // backend's dispatch loop. `hasFindings` reflects whether a valid
 // report_findings call has been seen earlier in the current turn — the
@@ -279,10 +289,22 @@ export type AgentChatDispatchResult = {
 //     deleted) — only this kind justifies discarding the session's context.
 //   - "unknown": neither state is provable from the error.
 export type SessionDeliveryErrorKind = "wedged_turn" | "session_gone" | "unknown";
+export type AgentRunnerSteerTrust = "external" | "trusted_orchestration";
 
+/**
+ * Provider boundary for investigation and chat runtimes.
+ *
+ * Model-backed implementations own prompt construction. They must treat
+ * human messages, repository text, telemetry, and other externally supplied
+ * fields as untrusted, using the shared agent-content boundary before adding
+ * them to model context.
+ */
 export type AgentRunnerBackend = {
   name: string;
   maxRepoResources: number;
+  // Required by the loader for model-backed runtime modules. Static runtimes
+  // do not construct prompts and may omit it.
+  contentBoundaryVersion?: typeof AGENT_CONTENT_BOUNDARY_VERSION;
   start(input: AgentRunnerStartInput): Promise<{ sessionId: string }>;
   // Release a session that is no longer reachable from an open Incident.
   // Implementations must be idempotent: an already-absent provider session is
@@ -298,7 +320,7 @@ export type AgentRunnerBackend = {
   sendChatMessage(sessionId: string, message: string): Promise<void>;
   collect(sessionId: string): Promise<AgentRunnerSnapshot>;
   resume(sessionId: string, message: string): Promise<void>;
-  steer(sessionId: string, message: string): Promise<void>;
+  steer(sessionId: string, message: string, trust: AgentRunnerSteerTrust): Promise<void>;
   // Recover a resumable provider turn in place. The backend owns its resource
   // model; the application supplies fresh credentials only for repositories
   // the provider says are attached to this session.
@@ -342,4 +364,12 @@ export type AgentRunnerBackend = {
     chatId: string;
     onReply(text: string, replyId: string): Promise<void>;
   }): Promise<AgentChatDispatchResult>;
+};
+
+export type AgentRunnerModelBackend = Omit<
+  AgentRunnerBackend,
+  "contentBoundaryVersion" | "start"
+> & {
+  contentBoundaryVersion: typeof AGENT_CONTENT_BOUNDARY_VERSION;
+  start(input: AgentRunnerModelStartInput): Promise<{ sessionId: string }>;
 };

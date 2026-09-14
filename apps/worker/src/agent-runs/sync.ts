@@ -18,7 +18,7 @@ import { TERMINAL_OUTCOME_NUDGE_MARKER, assembleAgentRunResult } from "../agent-
 import type { AgentRunContext } from "../agent-run-context.js";
 import { listAccessibleGithubRepositories } from "../agent-run-context.js";
 import { type PauseForEventsOutcome, createAgentRunLifecycle } from "../agent-run.js";
-import type { AgentRunnerSnapshot } from "../agent-runner-backend.js";
+import type { AgentRunnerBackend, AgentRunnerSnapshot } from "../agent-runner-backend.js";
 import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-usage.js";
 import { investigationGate } from "../billing/investigation-gate.js";
 import { usageNotifier } from "../billing/usage-notifier-infra.js";
@@ -203,7 +203,7 @@ export type IdleSteerOutcome = "steered" | "busy" | "not_applicable";
 export async function steerIdleRunnerWithPendingContext(opts: {
   snapshotStatus: string;
   pendingContextEvents: PendingContextEvent[];
-  runner: { steer(sessionId: string, message: string): Promise<void> };
+  runner: Pick<AgentRunnerBackend, "steer">;
   sessionId: string;
   incidentId: string;
   markEventsProcessed(ids: string[]): Promise<void>;
@@ -217,7 +217,7 @@ export async function steerIdleRunnerWithPendingContext(opts: {
     .filter((value): value is string => !!value)
     .join("\n");
   try {
-    await opts.runner.steer(opts.sessionId, delta || "New issues joined the incident.");
+    await opts.runner.steer(opts.sessionId, delta || "New issues joined the incident.", "external");
   } catch (err) {
     if (isSessionBusyError(err)) {
       // Model is mid-tool-call despite the idle status; leave the events
@@ -306,7 +306,7 @@ export async function continueSettledPullRequestLifecycle(opts: {
     continuation: AgentPullRequestLifecycleContinuation,
   ): Promise<PullRequestLifecycleRecordOutcome>;
   loadPendingContextEvents(): Promise<PendingContextEvent[]>;
-  runner: { steer(sessionId: string, message: string): Promise<void> };
+  runner: Pick<AgentRunnerBackend, "steer">;
   sessionId: string;
   incidentId: string;
   markEventsProcessed(ids: string[]): Promise<void>;
@@ -914,7 +914,11 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
 
           if (snapshot.status === "idle") {
             try {
-              await runner.steer(sessionId, mobileRegressionRepairPrompt());
+              await runner.steer(
+                sessionId,
+                mobileRegressionRepairPrompt(),
+                "trusted_orchestration",
+              );
             } catch (err) {
               if (isSessionBusyError(err)) return;
               throw err;
@@ -1576,7 +1580,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         );
         if (!nudgeAlreadyDelivered) {
           try {
-            await runner.steer(sessionId, nudgePrompt);
+            await runner.steer(sessionId, nudgePrompt, "trusted_orchestration");
           } catch (err) {
             // Release the claim so a later tick can retry the nudge — a
             // transient steer failure must not permanently spend the one-shot.

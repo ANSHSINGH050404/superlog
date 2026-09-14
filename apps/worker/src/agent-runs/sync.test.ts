@@ -488,7 +488,7 @@ test("findings-only completion cannot bypass the PR-creation guard", () => {
 });
 
 test("steerIdleRunnerWithPendingContext steers idle sessions with joined context deltas", async () => {
-  const steered: Array<{ sessionId: string; message: string }> = [];
+  const steered: Array<{ sessionId: string; message: string; trust: string }> = [];
   const processedIds: string[][] = [];
   const notifiedIncidents: string[] = [];
 
@@ -500,8 +500,8 @@ test("steerIdleRunnerWithPendingContext steers idle sessions with joined context
       { id: "evt-3", summary: "Issue B joined." },
     ],
     runner: {
-      async steer(sessionId, message) {
-        steered.push({ sessionId, message });
+      async steer(sessionId, message, trust) {
+        steered.push({ sessionId, message, trust });
       },
     },
     sessionId: "session-1",
@@ -516,7 +516,11 @@ test("steerIdleRunnerWithPendingContext steers idle sessions with joined context
 
   assert.equal(didSteer, "steered");
   assert.deepEqual(steered, [
-    { sessionId: "session-1", message: "Issue A joined.\nIssue B joined." },
+    {
+      sessionId: "session-1",
+      message: "Issue A joined.\nIssue B joined.",
+      trust: "external",
+    },
   ]);
   assert.deepEqual(processedIds, [["evt-1", "evt-2", "evt-3"]]);
   assert.deepEqual(notifiedIncidents, ["inc-1"]);
@@ -557,13 +561,15 @@ test("steerIdleRunnerWithPendingContext waits unless the runner is idle with pen
 
 test("steerIdleRunnerWithPendingContext sends a fallback delta when summaries are empty", async () => {
   let message = "";
+  let trust = "";
 
   const didSteer = await steerIdleRunnerWithPendingContext({
     snapshotStatus: "idle",
     pendingContextEvents: [{ id: "evt-1", summary: null }],
     runner: {
-      async steer(_sessionId, nextMessage) {
+      async steer(_sessionId, nextMessage, nextTrust) {
         message = nextMessage;
+        trust = nextTrust;
       },
     },
     sessionId: "session-1",
@@ -574,6 +580,7 @@ test("steerIdleRunnerWithPendingContext sends a fallback delta when summaries ar
 
   assert.equal(didSteer, "steered");
   assert.equal(message, "New issues joined the incident.");
+  assert.equal(trust, "external");
 });
 
 test("needsMobileRegressionRepair asks for a decision on Revyl-enabled mobile PRs", () => {

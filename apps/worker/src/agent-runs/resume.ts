@@ -7,8 +7,8 @@ import {
   db,
   isInboundInteractionEventKind,
   isIncidentResolutionProofCurrent,
-  requestFollowUpAgentRun,
   latestAgentPullRequestSettlementAt,
+  requestFollowUpAgentRun,
   resolveIncidentIfAllAgentPullRequestsSettled,
   schema,
 } from "@superlog/db";
@@ -156,7 +156,11 @@ export async function resumeDurableAgentRun(opts: {
   );
 
   if (onlyIncidentContext) {
-    await opts.runner.steer(opts.sessionId, combined || "New issues joined the incident.");
+    await opts.runner.steer(
+      opts.sessionId,
+      combined || "New issues joined the incident.",
+      "external",
+    );
   } else {
     await opts.runner.resume(opts.sessionId, combined);
   }
