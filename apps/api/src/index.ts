@@ -1,6 +1,7 @@
 import "./env.js";
 import "./net.js";
 import { serve } from "@hono/node-server";
+import { getConnInfo } from "@hono/node-server/conninfo";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { ensurePaygPromotion } from "@superlog/billing";
 import {
@@ -40,6 +41,7 @@ import {
   inArray,
   isNotNull,
   isNull,
+  lt,
   ne,
   notLike,
   or,
@@ -52,6 +54,15 @@ import { nanoid } from "nanoid";
 import { loadIncidentAlertEpisodes, loadTriggeringAlertForIssue } from "./alerts-service.js";
 import { mountAlerts } from "./alerts.js";
 import { mountAnomalyScanner } from "./anomaly-scanner.js";
+import {
+  authBehindTrustedProxy,
+  requestWithAuthClientIp,
+  resolveAuthClientIp,
+} from "./auth-client-ip.js";
+import { enforceGlobalAuthRateLimit } from "./auth-global-rate-limit.js";
+import { startAuthRateLimitCleanup } from "./auth-rate-limit-cleanup.js";
+import { recordAuthRateLimited } from "./auth-rate-limit-metrics.js";
+import { createDrizzleAuthRateLimitRepository } from "./auth-rate-limit-repository.js";
 import { auth } from "./auth.js";
 import { buildAutomationSettingsConflictUpdate } from "./automation-settings-update.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
@@ -203,6 +214,13 @@ type Vars = {
   demoReadProjectId?: string;
 } & Partial<GatewayVars>;
 const app = new Hono<{ Variables: Vars }>();
+const AUTH_BEHIND_TRUSTED_PROXY = authBehindTrustedProxy(process.env.AUTH_BEHIND_TRUSTED_PROXY);
+const DEPLOYMENT_ENVIRONMENT = process.env.SUPERLOG_ENV ?? process.env.NODE_ENV ?? "development";
+const authRateLimitRepository = createDrizzleAuthRateLimitRepository(db);
+logger.info(
+  { behindTrustedProxy: AUTH_BEHIND_TRUSTED_PROXY },
+  "auth client IP trust mode configured",
+);
 const incidentLifecycle = createIncidentLifecycle(db);
 const sourceMapObjectStore = sourceMapObjectStoreFromEnv(process.env);
 
@@ -340,7 +358,25 @@ app.use("/api/auth/*", createAuthActorAuditMiddleware(actorAuditDeps));
 // Better Auth handles its own routes under /api/auth/*. Mount before the
 // session middleware so sign-in/sign-up/oauth-callback endpoints don't trip
 // the unauthenticated guard.
-app.on(["POST", "GET"], "/api/auth/*", (c) => auth.handler(c.req.raw));
+app.on(["POST", "GET"], "/api/auth/*", async (c) => {
+  const clientIp = resolveAuthClientIp({
+    peerIp: getConnInfo(c).remote.address,
+    forwardedFor: c.req.header("x-forwarded-for"),
+    behindTrustedProxy: AUTH_BEHIND_TRUSTED_PROXY,
+  });
+  const globalLimitResponse = await enforceGlobalAuthRateLimit(authRateLimitRepository, clientIp);
+  if (globalLimitResponse) {
+    // Keep this attribute bounded: an attacker can choose an arbitrary auth
+    // path for the request that exhausts the aggregate bucket.
+    recordAuthRateLimited("/api/auth/*", DEPLOYMENT_ENVIRONMENT);
+    return globalLimitResponse;
+  }
+  const response = await auth.handler(requestWithAuthClientIp(c.req.raw, clientIp));
+  if (response.status === 429) {
+    recordAuthRateLimited(c.req.path, DEPLOYMENT_ENVIRONMENT);
+  }
+  return response;
+});
 
 mountGateway(app, ch);
 mountGithubPublic(app);
@@ -3355,6 +3391,19 @@ if (shouldRunMigrationsOnBoot(process.env)) {
   // shouldn't) run DDL on boot.
   logger.info({ scope: "db" }, "skipping boot migrations (RUN_MIGRATIONS_ON_BOOT=false)");
 }
+
+startAuthRateLimitCleanup({
+  repository: {
+    deleteBefore: async (cutoffEpochMs) => {
+      const deleted = await db
+        .delete(schema.rateLimits)
+        .where(lt(schema.rateLimits.lastRequest, cutoffEpochMs))
+        .returning({ id: schema.rateLimits.id });
+      return deleted.length;
+    },
+  },
+  onError: (error) => logger.warn({ err: error }, "failed to clear expired auth rate limits"),
+});
 
 const server = serve({ fetch: app.fetch, port: PORT });
 // Same load-balancer keep-alive concern as the proxy: Node's default 5s

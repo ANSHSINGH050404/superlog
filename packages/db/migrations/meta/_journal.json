@@ -869,6 +869,13 @@
       "when": 1787680319916,
       "tag": "0123_faulty_rhino",
       "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "7",
+      "when": 1789376227831,
+      "tag": "0124_fuzzy_princess_powerful",
+      "breakpoints": true
     }
   ]
 }

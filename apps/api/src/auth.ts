@@ -11,6 +11,8 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { admin, organization } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
 import { favoriteProjectToSeed, pickActiveOrgId as pickActiveOrgIdRule } from "./active-context.js";
+import { AUTH_CLIENT_IP_HEADER } from "./auth-client-ip.js";
+import { AUTH_RATE_LIMIT } from "./auth-rate-limit.js";
 import {
   orgInvitationEmailBody,
   passwordResetEmailBody,
@@ -159,12 +161,18 @@ export const auth = betterAuth({
       session: schema.sessions,
       account: schema.accounts,
       verification: schema.verifications,
+      rateLimit: schema.rateLimits,
       organization: schema.orgs,
       member: schema.orgMembers,
       invitation: schema.invitations,
     },
   }),
   advanced: {
+    ipAddress: {
+      // This header is stripped and rebuilt by the HTTP adapter before Better
+      // Auth sees it; never trust client-controlled forwarding headers here.
+      ipAddressHeaders: [AUTH_CLIENT_IP_HEADER],
+    },
     database: {
       generateId: () => crypto.randomUUID(),
     },
@@ -184,6 +192,7 @@ export const auth = betterAuth({
         }
       : {}),
   },
+  rateLimit: AUTH_RATE_LIMIT,
   emailAndPassword: {
     enabled: true,
     // Sign-ups still land logged-in immediately to keep dev/worktree flows

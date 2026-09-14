@@ -633,6 +633,20 @@ export const verifications = pgTable(
   }),
 );
 
+export const rateLimits = pgTable(
+  "rate_limits",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    key: text("key").notNull(),
+    count: integer("count").notNull(),
+    lastRequest: bigint("last_request", { mode: "number" }).notNull(),
+  },
+  (t) => ({
+    keyUniq: uniqueIndex("rate_limits_key_idx").on(t.key),
+    lastRequestIdx: index("rate_limits_last_request_idx").on(t.lastRequest),
+  }),
+);
+
 export const invitations = pgTable(
   "invitations",
   {

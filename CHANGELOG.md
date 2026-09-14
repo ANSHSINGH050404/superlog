@@ -4,6 +4,15 @@ Notable changes to Superlog. Add new entries at the top. Each entry is a
 `## YYYY-MM-DD — Title` heading; an optional `Tags:` line right under the
 heading becomes the entry's labels.
 
+## 2026-09-14 — Stronger authentication abuse protection
+
+Tags: Security, Improvement
+
+Authentication endpoints now enforce shared per-IP request limits in every
+environment, with tighter limits for sign-in, sign-up, password recovery, and
+verification-email requests. Deployments behind a trusted proxy can explicitly
+enable forwarded client-IP handling without trusting caller-supplied headers.
+
 ## 2026-07-16 — Smarter custom MCP setup
 
 Tags: Improvement, MCP
