@@ -9,6 +9,24 @@ export {
 } from "./agent-runtime.js";
 export { runMigrations } from "./migrate.js";
 export {
+  clearedLinearCredentialFields,
+  clearedNotionCredentialFields,
+  clearedSlackCredentialFields,
+  credentialStorageMode,
+  hydrateLinearInstallation,
+  hydrateNotionInstallation,
+  hydrateSlackInstallation,
+  hydrateWebhookEndpoint,
+  linearCredentialFields,
+  notionCredentialFields,
+  prepareStoredCredential,
+  readStoredCredential,
+  slackCredentialFields,
+  webhookCredentialFields,
+  type CredentialStorageMode,
+  type StoredCredential,
+} from "./credential-storage.js";
+export {
   createSentryCredentialRepository,
   type SentryCredential,
   type SentryCredentialRepository,
@@ -364,10 +382,12 @@ export {
 export {
   encryptIntegrationSecret,
   decryptIntegrationSecret,
+  integrationSecretEncryptionConfigured,
   type IntegrationSecretCipher,
 } from "./integration-secrets.js";
 export {
   exchangeLinearCode,
+  findActiveLinearInstallationByWebhookId,
   refreshLinearAccessToken,
   ensureFreshLinearToken,
   markLinearInstallationNeedsReauth,

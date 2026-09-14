@@ -1,10 +1,13 @@
 import crypto from "node:crypto";
 import {
   type IncidentResolutionProof,
+  clearedSlackCredentialFields,
   confirmResolutionProposal,
   db,
   dismissResolutionProposal,
   findChatByAnchor,
+  hydrateSlackInstallation,
+  integrationSecretEncryptionConfigured,
   loadCurrentIncidentResolutionProof,
   mentionsBot,
   recordInboundChatMessage,
@@ -15,6 +18,7 @@ import {
   resolveIncidentWithProof,
   retryBlockedAgentRun,
   schema,
+  slackCredentialFields,
   stripBotMention,
   syncLoopsContactsForOrg,
   unsilenceIncidentIssues,
@@ -93,6 +97,7 @@ export function mountSlackPublic(
     process.env.SLACK_OAUTH_REDIRECT_URL ?? "http://localhost:4100/slack/oauth/callback";
   const stateSecret = process.env.STATE_SIGNING_SECRET;
   const webOrigin = process.env.WEB_ORIGIN ?? "http://localhost:5173";
+  const credentialEncryptionConfigured = integrationSecretEncryptionConfigured();
 
   if (!clientId || !clientSecret) {
     log.warn("SLACK_CLIENT_ID/SECRET not set — /slack/oauth/callback disabled");
@@ -102,7 +107,7 @@ export function mountSlackPublic(
   // while the current session and manager role authorize its exact project.
   // The signed state binds that same identity through the OAuth callback.
   app.get("/slack/install", async (c) => {
-    if (!clientId || !stateSecret) {
+    if (!clientId || !stateSecret || !credentialEncryptionConfigured) {
       return c.json({ error: "slack not configured" }, 503);
     }
     const userId = await getAuthenticatedUserId(c.req.raw.headers);
@@ -134,7 +139,7 @@ export function mountSlackPublic(
   });
 
   app.get("/slack/oauth/callback", async (c) => {
-    if (!clientId || !clientSecret || !stateSecret) {
+    if (!clientId || !clientSecret || !stateSecret || !credentialEncryptionConfigured) {
       return c.json({ error: "slack not configured" }, 503);
     }
     const callbackWebOrigin = resolveCallbackWebOrigin(c, webOrigin);
@@ -1214,7 +1219,7 @@ async function handleSlackViewSubmission(payload: SlackInteractivityPayload): Pr
 
 async function findInstallationForTeam(teamId: string) {
   if (!teamId) return null;
-  return db.query.slackInstallations.findFirst({
+  const row = await db.query.slackInstallations.findFirst({
     where: and(
       eq(schema.slackInstallations.teamId, teamId),
       isNull(schema.slackInstallations.revokedAt),
@@ -1232,6 +1237,7 @@ async function findInstallationForTeam(teamId: string) {
       sql`coalesce(${schema.slackInstallations.installedAt}, ${schema.slackInstallations.createdAt})`,
     ),
   });
+  return row ? hydrateSlackInstallation(row) : null;
 }
 
 // Apply the installation-selection precedence for incident-scoped Slack
@@ -1260,7 +1266,7 @@ export function preferPinnedInstallation<T>(
 // preferring its pinned installation id (see preferPinnedInstallation). The
 // team lookup only runs when there is no usable pin.
 async function installationForIncident(opts: { pinnedId: string | null; teamId: string }) {
-  const pinned = opts.pinnedId
+  const pinnedRow = opts.pinnedId
     ? await db.query.slackInstallations.findFirst({
         where: and(
           eq(schema.slackInstallations.id, opts.pinnedId),
@@ -1268,6 +1274,7 @@ async function installationForIncident(opts: { pinnedId: string | null; teamId: 
         ),
       })
     : null;
+  const pinned = pinnedRow ? hydrateSlackInstallation(pinnedRow) : null;
   return preferPinnedInstallation(
     pinned,
     pinned ? null : await findInstallationForTeam(opts.teamId),
@@ -1284,6 +1291,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
   const redirectUrl =
     process.env.SLACK_OAUTH_REDIRECT_URL ?? "http://localhost:4100/slack/oauth/callback";
   const stateSecret = process.env.STATE_SIGNING_SECRET;
+  const credentialEncryptionConfigured = integrationSecretEncryptionConfigured();
 
   app.get("/api/projects/:projectId/slack/installation", async (c) => {
     const projectId = c.req.param("projectId");
@@ -1298,7 +1306,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/projects/:projectId/slack/install-url", async (c) => {
-    if (!clientId || !stateSecret) {
+    if (!clientId || !stateSecret || !credentialEncryptionConfigured) {
       return c.json({ error: "slack not configured" }, 503);
     }
     const projectId = c.req.param("projectId");
@@ -1334,7 +1342,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
 
     await db
       .update(schema.slackInstallations)
-      .set({ revokedAt: new Date() })
+      .set({ ...clearedSlackCredentialFields, revokedAt: new Date() })
       .where(eq(schema.slackInstallations.id, row.id));
     return c.json({ ok: true });
   });
@@ -1351,7 +1359,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
       if (isRevokedSlackAuthError(result.error)) {
         await db
           .update(schema.slackInstallations)
-          .set({ revokedAt: new Date() })
+          .set({ ...clearedSlackCredentialFields, revokedAt: new Date() })
           .where(eq(schema.slackInstallations.id, row.id));
       }
       return c.json({ error: result.error }, 502);
@@ -1372,7 +1380,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/slack/install-url", async (c) => {
-    if (!clientId || !stateSecret) {
+    if (!clientId || !stateSecret || !credentialEncryptionConfigured) {
       return c.json({ error: "slack not configured" }, 503);
     }
     const callbackRedirectUrl = resolveSlackRedirectUrl(c, redirectUrl);
@@ -1413,7 +1421,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
 
     await db
       .update(schema.slackInstallations)
-      .set({ revokedAt: new Date() })
+      .set({ ...clearedSlackCredentialFields, revokedAt: new Date() })
       .where(eq(schema.slackInstallations.id, row.id));
     return c.json({ ok: true });
   });
@@ -1430,7 +1438,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
       if (isRevokedSlackAuthError(result.error)) {
         await db
           .update(schema.slackInstallations)
-          .set({ revokedAt: new Date() })
+          .set({ ...clearedSlackCredentialFields, revokedAt: new Date() })
           .where(eq(schema.slackInstallations.id, row.id));
       }
       return c.json({ error: result.error }, 502);
@@ -1539,12 +1547,13 @@ export function mountSlackAuthed(app: Hono<any>): void {
 }
 
 async function findInstallation(projectId: string) {
-  return db.query.slackInstallations.findFirst({
+  const row = await db.query.slackInstallations.findFirst({
     where: and(
       eq(schema.slackInstallations.projectId, projectId),
       isNull(schema.slackInstallations.revokedAt),
     ),
   });
+  return row ? hydrateSlackInstallation(row) : null;
 }
 
 async function upsertInstallation(v: {
@@ -1556,6 +1565,7 @@ async function upsertInstallation(v: {
   scope: string | null;
   installedByUserId: string | null;
 }): Promise<void> {
+  const credentials = slackCredentialFields(v.botAccessToken);
   await db
     .insert(schema.slackInstallations)
     .values({
@@ -1563,7 +1573,7 @@ async function upsertInstallation(v: {
       teamId: v.teamId,
       teamName: v.teamName,
       botUserId: v.botUserId,
-      botAccessToken: v.botAccessToken,
+      ...credentials,
       scope: v.scope,
       installedByUserId: v.installedByUserId,
       installedAt: new Date(),
@@ -1573,7 +1583,7 @@ async function upsertInstallation(v: {
       set: {
         teamName: v.teamName,
         botUserId: v.botUserId,
-        botAccessToken: v.botAccessToken,
+        ...credentials,
         scope: v.scope,
         installedByUserId: v.installedByUserId,
         revokedAt: null,
@@ -1925,7 +1935,7 @@ async function handleChatEvent(
 // project). Callers pick between them via resolveChatInstallation.
 async function listInstallationsForTeam(teamId: string) {
   if (!teamId) return [];
-  return db.query.slackInstallations.findMany({
+  const rows = await db.query.slackInstallations.findMany({
     where: and(
       eq(schema.slackInstallations.teamId, teamId),
       isNull(schema.slackInstallations.revokedAt),
@@ -1934,6 +1944,7 @@ async function listInstallationsForTeam(teamId: string) {
       sql`coalesce(${schema.slackInstallations.installedAt}, ${schema.slackInstallations.createdAt})`,
     ),
   });
+  return rows.map(hydrateSlackInstallation);
 }
 
 async function resolveUserOrg(

@@ -1,4 +1,14 @@
-import { db, exchangeNotionCode, notionOwnerEmail, revokeNotionToken, schema } from "@superlog/db";
+import {
+  clearedNotionCredentialFields,
+  db,
+  exchangeNotionCode,
+  hydrateNotionInstallation,
+  integrationSecretEncryptionConfigured,
+  notionCredentialFields,
+  notionOwnerEmail,
+  revokeNotionToken,
+  schema,
+} from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { logger } from "./logger.js";
@@ -34,18 +44,26 @@ function config() {
       process.env.NOTION_OAUTH_REDIRECT_URL ?? "http://localhost:4100/notion/oauth/callback",
     stateSecret: process.env.STATE_SIGNING_SECRET,
     webOrigin: process.env.WEB_ORIGIN ?? "http://localhost:5173",
+    credentialEncryptionConfigured: integrationSecretEncryptionConfigured(),
   };
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
 export function mountNotionPublic(app: Hono<any>): void {
-  const { clientId, clientSecret, redirectUrl, stateSecret, webOrigin } = config();
+  const {
+    clientId,
+    clientSecret,
+    redirectUrl,
+    stateSecret,
+    webOrigin,
+    credentialEncryptionConfigured,
+  } = config();
   if (!clientId || !clientSecret) {
     log.warn("NOTION_CLIENT_ID/SECRET not set — /notion/oauth/callback disabled");
   }
 
   app.get("/notion/oauth/callback", async (c) => {
-    if (!clientId || !clientSecret || !stateSecret) {
+    if (!clientId || !clientSecret || !stateSecret || !credentialEncryptionConfigured) {
       return c.json({ error: "notion not configured" }, 503);
     }
     const err = c.req.query("error");
@@ -107,7 +125,8 @@ export function mountNotionPublic(app: Hono<any>): void {
 
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
 export function mountNotionAuthed(app: Hono<any>): void {
-  const { clientId, clientSecret, redirectUrl, stateSecret } = config();
+  const { clientId, clientSecret, redirectUrl, stateSecret, credentialEncryptionConfigured } =
+    config();
 
   app.get("/api/notion/installation", async (c) => {
     const ctx = await resolveUserOrg(c);
@@ -130,7 +149,7 @@ export function mountNotionAuthed(app: Hono<any>): void {
     // clientSecret is required by the callback's token exchange, so gate the
     // whole flow on it here rather than sending the user into an OAuth we can't
     // complete.
-    if (!clientId || !clientSecret || !stateSecret) {
+    if (!clientId || !clientSecret || !stateSecret || !credentialEncryptionConfigured) {
       return c.json({ error: "notion not configured" }, 503);
     }
     const ctx = await resolveUserOrgManager(c);
@@ -154,7 +173,7 @@ export function mountNotionAuthed(app: Hono<any>): void {
     }
     await db
       .update(schema.notionInstallations)
-      .set({ revokedAt: new Date(), updatedAt: new Date() })
+      .set({ ...clearedNotionCredentialFields, revokedAt: new Date(), updatedAt: new Date() })
       .where(eq(schema.notionInstallations.id, row.id));
     log.info(
       { org_id: ctx.orgId, workspace_id: row.workspaceId, actor_user_id: ctx.userId },
@@ -165,12 +184,14 @@ export function mountNotionAuthed(app: Hono<any>): void {
 }
 
 function findCurrentInstallation(projectId: string) {
-  return db.query.notionInstallations.findFirst({
-    where: and(
-      eq(schema.notionInstallations.projectId, projectId),
-      isNull(schema.notionInstallations.revokedAt),
-    ),
-  });
+  return db.query.notionInstallations
+    .findFirst({
+      where: and(
+        eq(schema.notionInstallations.projectId, projectId),
+        isNull(schema.notionInstallations.revokedAt),
+      ),
+    })
+    .then((row) => (row ? hydrateNotionInstallation(row) : null));
 }
 
 async function upsertInstallation(v: {
@@ -188,7 +209,7 @@ async function upsertInstallation(v: {
   await db.transaction(async (tx) => {
     await tx
       .update(schema.notionInstallations)
-      .set({ revokedAt: new Date(), updatedAt: new Date() })
+      .set({ ...clearedNotionCredentialFields, revokedAt: new Date(), updatedAt: new Date() })
       .where(
         and(
           eq(schema.notionInstallations.projectId, v.projectId),
@@ -203,7 +224,7 @@ async function upsertInstallation(v: {
       workspaceName: v.workspaceName,
       workspaceIcon: v.workspaceIcon,
       actorEmail: v.actorEmail,
-      accessToken: v.accessToken,
+      ...notionCredentialFields(v.accessToken),
     });
   });
 }

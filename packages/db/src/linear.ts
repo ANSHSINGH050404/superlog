@@ -1,5 +1,7 @@
-import { eq, sql } from "drizzle-orm";
-import { db } from "./client.js";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { type DB, db } from "./client.js";
+import { hydrateLinearInstallation, linearCredentialFields } from "./credential-storage.js";
+import { integrationSecretEncryptionConfigured } from "./integration-secrets.js";
 import * as schema from "./schema.js";
 
 const TOKEN_URL = "https://api.linear.app/oauth/token";
@@ -110,6 +112,19 @@ export async function fetchLinearViewer(accessToken: string): Promise<LinearView
 }
 
 export type LinearWebhook = { id: string; secret: string };
+
+export async function findActiveLinearInstallationByWebhookId(
+  webhookId: string,
+  database: DB = db,
+) {
+  const row = await database.query.linearInstallations.findFirst({
+    where: and(
+      eq(schema.linearInstallations.webhookId, webhookId),
+      isNull(schema.linearInstallations.revokedAt),
+    ),
+  });
+  return row ? hydrateLinearInstallation(row) : null;
+}
 
 export async function createLinearWebhook(args: {
   accessToken: string;
@@ -350,10 +365,11 @@ export async function ensureFreshLinearToken(args: {
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${args.installationId}, 0))`,
     );
 
-    const row = await tx.query.linearInstallations.findFirst({
+    const storedRow = await tx.query.linearInstallations.findFirst({
       where: eq(schema.linearInstallations.id, args.installationId),
     });
-    if (!row) throw new Error(`linear installation ${args.installationId} not found`);
+    if (!storedRow) throw new Error(`linear installation ${args.installationId} not found`);
+    const row = hydrateLinearInstallation(storedRow);
     if (row.revokedAt) throw new Error("linear installation is revoked");
     if (row.reauthRequiredAt) throw new Error("linear installation requires reauthorization");
 
@@ -364,6 +380,9 @@ export async function ensureFreshLinearToken(args: {
     }
     if (!row.refreshToken) {
       return { accessToken: row.accessToken, expiresAt: row.accessExpiresAt, rotated: false };
+    }
+    if (!integrationSecretEncryptionConfigured()) {
+      throw new Error("AGENT_SECRETS_KEY is required before refreshing Linear credentials");
     }
 
     const fresh = await refreshLinearAccessToken({
@@ -376,8 +395,11 @@ export async function ensureFreshLinearToken(args: {
     await tx
       .update(schema.linearInstallations)
       .set({
-        accessToken: fresh.access_token,
-        refreshToken: fresh.refresh_token ?? row.refreshToken,
+        ...linearCredentialFields({
+          accessToken: fresh.access_token,
+          refreshToken: fresh.refresh_token ?? row.refreshToken,
+          webhookSecret: row.webhookSecret,
+        }),
         accessExpiresAt: newExpiresAt,
         scope: fresh.scope ?? row.scope,
         updatedAt: new Date(),

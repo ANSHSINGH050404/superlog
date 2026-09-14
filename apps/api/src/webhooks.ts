@@ -4,8 +4,10 @@ import {
   enqueueRedelivery,
   enqueueTestDelivery,
   generateWebhookSecret,
+  integrationSecretEncryptionConfigured,
   isWebhookEventType,
   schema,
+  webhookCredentialFields,
 } from "@superlog/db";
 import { WebhookDestinationError, assertPublicWebhookUrl } from "@superlog/net-guard";
 import { and, desc, eq } from "drizzle-orm";
@@ -69,6 +71,7 @@ function toDeliveryView(d: schema.WebhookDelivery) {
 
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
 export function mountWebhooks(app: Hono<any>): void {
+  const credentialEncryptionConfigured = integrationSecretEncryptionConfigured();
   async function requireProjectAccess(c: Context<{ Variables: Vars }>, projectId: string) {
     const project = await db.query.projects.findFirst({
       where: eq(schema.projects.id, projectId),
@@ -109,6 +112,9 @@ export function mountWebhooks(app: Hono<any>): void {
   app.post("/api/projects/:projectId/webhooks", async (c) => {
     const projectId = c.req.param("projectId");
     await requireProjectManager(c, projectId);
+    if (!credentialEncryptionConfigured) {
+      throw new HTTPException(503, { message: "credential encryption not configured" });
+    }
     const body = (await c.req.json().catch(() => ({}))) as {
       url?: unknown;
       description?: unknown;
@@ -126,7 +132,13 @@ export function mountWebhooks(app: Hono<any>): void {
     const secret = generateWebhookSecret();
     const [row] = await db
       .insert(schema.webhookEndpoints)
-      .values({ projectId, url, description, secret, ...(enabledEvents ? { enabledEvents } : {}) })
+      .values({
+        projectId,
+        url,
+        description,
+        ...webhookCredentialFields(secret),
+        ...(enabledEvents ? { enabledEvents } : {}),
+      })
       .returning();
     if (!row) throw new HTTPException(500, { message: "failed to create endpoint" });
     return c.json({
@@ -137,7 +149,7 @@ export function mountWebhooks(app: Hono<any>): void {
       disabledAt: row.disabledAt,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
-      secret: row.secret,
+      secret,
     });
   });
 
@@ -184,10 +196,13 @@ export function mountWebhooks(app: Hono<any>): void {
     const projectId = c.req.param("projectId");
     const id = c.req.param("id");
     await requireProjectManager(c, projectId);
+    if (!credentialEncryptionConfigured) {
+      throw new HTTPException(503, { message: "credential encryption not configured" });
+    }
     const secret = generateWebhookSecret();
     const [row] = await db
       .update(schema.webhookEndpoints)
-      .set({ secret, updatedAt: new Date() })
+      .set({ ...webhookCredentialFields(secret), updatedAt: new Date() })
       .where(
         and(eq(schema.webhookEndpoints.id, id), eq(schema.webhookEndpoints.projectId, projectId)),
       )
