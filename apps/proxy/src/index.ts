@@ -17,7 +17,11 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { createIngestEntitlementGate, signalForPath } from "./billing/ingest-entitlement.js";
-import { EmptyBodyError, PayloadTooLargeError } from "./body-capture.js";
+import {
+  EmptyBodyError,
+  PayloadTooLargeError,
+  assertBodyWithinLimit,
+} from "./body-capture.js";
 import { ClickHouseIngestWriter, getIngestClickHouseConfig } from "./clickhouse-writer.js";
 import { EMPTY_BODY_ERROR_MESSAGE, isDeclaredEmptyBody } from "./empty-body-guard.js";
 import {
@@ -467,11 +471,16 @@ app.post("/render/pull/metrics", (c) =>
 const forwardRenderStreamMetrics = (c: Context<{ Variables: Variables }>) =>
   forward(c, "/v1/metrics", "resourceMetrics", {
     source: "render",
-    bodyTransform: (body, contentType, contentEncoding) => ({
+    bodyTransform: async (body, contentType, contentEncoding) => ({
       body: Buffer.from(
         JSON.stringify(
           stampRenderStreamMetrics(
-            decodeOtlpMetricsPayload({ body, contentType, contentEncoding }),
+            await decodeOtlpMetricsPayload({
+              body,
+              contentType,
+              contentEncoding,
+              maxDecompressedBytes: MAX_BODY_BYTES,
+            }),
           ),
         ),
       ),
@@ -672,7 +681,10 @@ type ForwardOptions = {
     body: Buffer,
     contentType: string,
     contentEncoding?: string,
-  ) => { body: Buffer; contentType: string; contentEncoding?: string } | null;
+  ) =>
+    | { body: Buffer; contentType: string; contentEncoding?: string }
+    | null
+    | Promise<{ body: Buffer; contentType: string; contentEncoding?: string } | null>;
 };
 
 async function forward(
@@ -774,7 +786,7 @@ async function forward(
       if (opts.bodyTransform) {
         try {
           const original = await collectStreamWithCap(bodyStream, MAX_BODY_BYTES);
-          const transformed = opts.bodyTransform(original, contentType, contentEncoding);
+          const transformed = await opts.bodyTransform(original, contentType, contentEncoding);
           if (!transformed) {
             responseStatus = 200;
             span.setAttribute("ingest.dropped", "body_filtered");
@@ -788,6 +800,7 @@ async function forward(
               },
             });
           }
+          assertBodyWithinLimit(transformed.body, MAX_BODY_BYTES);
           prebufferedBody = transformed.body;
           contentType = transformed.contentType;
           contentEncoding = transformed.contentEncoding;

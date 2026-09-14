@@ -19,7 +19,7 @@ import {
 } from "@aws-sdk/client-sqs";
 import { Upload } from "@aws-sdk/lib-storage";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
-import { type SpillSink, captureBody } from "./body-capture.js";
+import { PayloadTooLargeError, type SpillSink, captureBody } from "./body-capture.js";
 import type { IngestRowWriter } from "./clickhouse-writer.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { proxyOperationalRecorder } from "./operational-metrics.js";
@@ -816,14 +816,20 @@ export class IngestQueue {
         // allowed to throw — a ClickHouse failure should redeliver, not drop.
         let decoded: DecodedRows | null = null;
         try {
-          decoded = decodeOtlpToRows({
+          decoded = await decodeOtlpToRows({
             path: parsed.path,
             projectId: parsed.projectId,
             contentType: parsed.contentType,
             contentEncoding: parsed.contentEncoding,
             body,
+            maxDecompressedBytes: this.config.maxBodyBytes,
           });
         } catch (decodeErr) {
+          if (decodeErr instanceof PayloadTooLargeError) {
+            throw new PoisonMessageError(
+              `decompressed ingest payload exceeds the ${decodeErr.limitBytes}-byte limit`,
+            );
+          }
           this.logger.warn(
             { err: decodeErr, path: parsed.path, projectId: parsed.projectId },
             "direct-write decode failed; forwarding to collector",
