@@ -18,8 +18,6 @@ import { resolveActiveOrgContext } from "./org-context.js";
 
 const log = logger.child({ scope: "gateway" });
 
-const UPSTREAM = "https://api.anthropic.com";
-const HARD_CAP_PER_ORG = Number(process.env.SUPERLOG_HARD_CAP ?? 500);
 const DEVICE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_DAYS = 60;
 
@@ -59,7 +57,6 @@ type Device = {
   };
 };
 
-const usageByOrg = new Map<string, number>();
 const devicesByDeviceCode = new Map<string, Device>();
 const devicesByUserCode = new Map<string, Device>();
 
@@ -101,10 +98,6 @@ export type GatewayVars = { principal: Principal };
 // Vars if they want typed access downstream.
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
 export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
-  const upstreamKey = process.env.ANTHROPIC_API_KEY;
-  if (!upstreamKey) {
-    log.warn("ANTHROPIC_API_KEY not set — /v1/messages proxy disabled");
-  }
   const publicUrl =
     process.env.GATEWAY_PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 4100}`;
   const webOrigin = process.env.WEB_ORIGIN ?? "http://localhost:5173";
@@ -386,34 +379,7 @@ export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
     return c.json({
       user: p.userEmail,
       org: p.orgName,
-      usage: usageByOrg.get(p.orgId) ?? 0,
-      cap: HARD_CAP_PER_ORG,
     });
-  });
-
-  app.all("/v1/messages", async (c) => {
-    if (!upstreamKey) {
-      return c.json({ error: "gateway upstream not configured" }, 503);
-    }
-    const p = c.var.principal as Principal;
-    const used = usageByOrg.get(p.orgId) ?? 0;
-    if (used >= HARD_CAP_PER_ORG) {
-      return c.json(
-        {
-          error: {
-            type: "rate_limit_error",
-            message: `org cap reached (${HARD_CAP_PER_ORG})`,
-          },
-        },
-        429,
-      );
-    }
-    usageByOrg.set(p.orgId, used + 1);
-    log.info(
-      { user: p.userEmail, org: p.orgName, used: used + 1, cap: HARD_CAP_PER_ORG },
-      "/v1/messages",
-    );
-    return proxyToAnthropic(c.req.raw, "/v1/messages", upstreamKey);
   });
 
   app.get("/v1/telemetry/recent", async (c) => {
@@ -446,13 +412,6 @@ export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
       logs,
       metrics,
     });
-  });
-
-  app.all("/v1/*", (c) => {
-    if (!upstreamKey) {
-      return c.json({ error: "gateway upstream not configured" }, 503);
-    }
-    return proxyToAnthropic(c.req.raw, new URL(c.req.url).pathname, upstreamKey);
   });
 }
 
@@ -552,44 +511,6 @@ async function ensureAccount(
     preferredProjectId: scope.projectId,
   });
   return { user, org, project };
-}
-
-export async function proxyToAnthropic(
-  req: Request,
-  path: string,
-  upstreamKey: string,
-): Promise<Response> {
-  const url = new URL(path, UPSTREAM);
-  // Allowlist only headers Anthropic needs. Forwarding cf-* / x-forwarded-*
-  // from our inbound (api.superlog.sh is orange-clouded) makes Anthropic's
-  // own Cloudflare edge think the request has already traversed CF and
-  // reject it with Error 1000 ("DNS points to prohibited IP").
-  const FORWARD = new Set(["content-type", "accept", "accept-encoding"]);
-  const headers = new Headers();
-  for (const [name, value] of req.headers) {
-    const lower = name.toLowerCase();
-    if (FORWARD.has(lower) || lower.startsWith("anthropic-") || lower.startsWith("x-stainless-")) {
-      headers.set(name, value);
-    }
-  }
-  headers.set("x-api-key", upstreamKey);
-  if (!headers.has("anthropic-version")) headers.set("anthropic-version", "2023-06-01");
-
-  const upstream = await fetch(url, {
-    method: req.method,
-    headers,
-    body:
-      req.method === "GET" || req.method === "HEAD"
-        ? undefined
-        : (req.body as ReadableStream | null),
-    duplex: "half",
-    redirect: "manual",
-  } as RequestInit & { duplex: "half" });
-
-  const respHeaders = new Headers(upstream.headers);
-  respHeaders.delete("content-encoding");
-  respHeaders.delete("content-length");
-  return new Response(upstream.body, { status: upstream.status, headers: respHeaders });
 }
 
 async function requireUserFromSession(
