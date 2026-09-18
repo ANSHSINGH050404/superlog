@@ -658,9 +658,10 @@ export const invitations = pgTable(
     role: text("role"),
     status: text("status").notNull().default("pending"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    inviterId: uuid("inviter_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+    // Nullable + SET NULL: deleting a user must not delete pending invites
+    // they sent (previously CASCADE). Better-Auth always writes inviterId on
+    // invite-member; it is only nulled when the inviter row is deleted.
+    inviterId: uuid("inviter_id").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({

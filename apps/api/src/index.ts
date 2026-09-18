@@ -61,8 +61,7 @@ import {
 } from "./auth-client-ip.js";
 import { enforceGlobalAuthRateLimit } from "./auth-global-rate-limit.js";
 import { startAuthRateLimitCleanup } from "./auth-rate-limit-cleanup.js";
-import { recordAuthRateLimited } from "./auth-rate-limit-metrics.js";
-import { createDrizzleAuthRateLimitRepository } from "./auth-rate-limit-repository.js";
+import { recordAuthRateLimited } from "./auth-rate-limit-metrics.js";import { createDrizzleAuthRateLimitRepository } from "./auth-rate-limit-repository.js";
 import { auth } from "./auth.js";
 import { buildAutomationSettingsConflictUpdate } from "./automation-settings-update.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
@@ -77,6 +76,10 @@ import {
   projectHasIngested,
   resolveEffectiveReadProjectId,
 } from "./demo.js";
+import {
+  isEmailVerificationExempt,
+  isGrandfatheredUnverifiedUser,
+} from "./email-verification-gate.js";
 import { mountFeedbackAuthed, mountFeedbackPublic } from "./feedback.js";
 import { type GatewayVars, mountGateway } from "./gateway.js";
 import { mountGcpAuthed, mountGcpPublic } from "./gcp/interfaces.js";
@@ -452,6 +455,12 @@ app.use("/api/*", async (c, next) => {
   // admin is acting as another user; surface it on `c.var` so /api/me can
   // expose a boolean without the web client having to inspect raw session.
   c.set("impersonating", typeof session.session.impersonatedBy === "string");
+  if (session.user.emailVerified !== true) {
+    const grandfathered = await isGrandfatheredUnverifiedUser(session.user.id);
+    if (!grandfathered && !isEmailVerificationExempt(c.req.method, path)) {
+      return c.json({ error: "email_verification_required" }, 403);
+    }
+  }
   if (!isAuditableMutation({ method: c.req.method, path })) return next();
   // Audit in a finally so writes that fail by throwing an HTTPException (e.g.
   // invalid input) are attributed too, not just those returning an error body.
@@ -531,6 +540,7 @@ app.get("/api/me", async (c) => {
         name: user.name,
         isStaff: userIsStaff(user.role),
         impersonating: c.var.impersonating === true,
+        emailVerified: user.emailVerified,
       },
       org: null,
       project: null,
@@ -587,6 +597,7 @@ app.get("/api/me", async (c) => {
       name: user.name,
       isStaff: userIsStaff(user.role),
       impersonating: c.var.impersonating === true,
+      emailVerified: user.emailVerified,
     },
     org: { id: org.id, name: org.name, slug: org.slug, githubSetupNeeded },
     project: {

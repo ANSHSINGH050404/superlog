@@ -100,7 +100,7 @@ function AcceptInvitationInner({
         error: res.error.message,
       });
       setAction("idle");
-      setActionError(res.error.message ?? "Failed to accept invitation.");
+      setActionError(mapInvitationError(res.error.message, "Failed to accept invitation."));
       return;
     }
     const orgId = (res.data as unknown as { invitation: { organizationId: string } }).invitation
@@ -134,7 +134,10 @@ function AcceptInvitationInner({
       if (res.error) {
         setState({
           kind: "error",
-          message: res.error.message ?? "Invitation not found or expired.",
+          message: mapInvitationError(
+            res.error.message,
+            "Invitation not found or expired.",
+          ),
         });
         return;
       }
@@ -247,4 +250,15 @@ function AcceptInvitationInner({
       </div>
     </CenteredShell>
   );
+}
+
+// B-01: inviting requires a verified email, so unverified invitees get a
+// FORBIDDEN from Better Auth. Without this mapping that surfaces as the
+// misleading "Invitation not found" (looks like a bad link) — tell them the
+// actual next step instead.
+function mapInvitationError(message: string | null | undefined, fallback: string): string {
+  if (message && /verif/i.test(message)) {
+    return "Please verify your email first — check your inbox for the verification link, then accept this invite again.";
+  }
+  return message ?? fallback;
 }
