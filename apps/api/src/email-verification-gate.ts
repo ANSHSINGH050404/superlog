@@ -48,7 +48,13 @@ export function isEmailVerificationExempt(method: string, path: string): boolean
 // still create orgs, send invites, or manage members/roles (the invite
 // accept/reject endpoints re-gate on verification inside Better-Auth itself,
 // and reads stay available — only mutations are denied here).
-const BLOCKED_AUTH_MUTATIONS = new Set([
+//
+// Deliberately a blocklist, not default-deny: Better-Auth serves internal
+// flows (callbacks, session refresh, OAuth token exchange) under /api/auth/*
+// that must keep working, and an explicit list keeps the denied surface
+// reviewable. The unit test pins the FULL set below, so any removal or
+// addition fails loudly until the test is updated alongside it.
+export const BLOCKED_AUTH_MUTATIONS = new Set([
   "/api/auth/organization/create",
   "/api/auth/organization/update",
   "/api/auth/organization/delete",
@@ -63,6 +69,13 @@ const BLOCKED_AUTH_MUTATIONS = new Set([
   "/api/auth/organization/add-team-member",
   "/api/auth/organization/remove-team-member",
   "/api/auth/organization/set-active-team",
+  // Review round 2: password changes and org switching are also authenticated
+  // mutations. An unverified session has no business doing either (there is
+  // no verified mailbox to recover, and unverified users hold no usable org
+  // context). Invitation accept/reject stay off this list: Better-Auth
+  // re-gates those on verification itself and returns its mapped errors.
+  "/api/auth/organization/set-active",
+  "/api/auth/change-password",
   "/api/auth/organization/create-role",
   "/api/auth/organization/update-role",
   "/api/auth/organization/delete-role",

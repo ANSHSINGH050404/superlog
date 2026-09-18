@@ -4,6 +4,7 @@ import { after, before, test } from "node:test";
 import { closeDb, db, runMigrations, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import {
+  BLOCKED_AUTH_MUTATIONS,
   EMAIL_VERIFICATION_GRANDFATHER_CUTOFF,
   isAuthMutationBlockedForUnverified,
   isEmailVerificationExempt,
@@ -91,22 +92,42 @@ test("membership created after the cutoff is not grandfathered", async () => {
 });
 
 test("organization/admin mutations are blocked for unverified sessions", () => {
-  for (const path of [
-    "/api/auth/organization/create",
-    "/api/auth/organization/update",
-    "/api/auth/organization/delete",
-    "/api/auth/organization/invite-member",
-    "/api/auth/organization/cancel-invitation",
-    "/api/auth/organization/remove-member",
-    "/api/auth/organization/update-member-role",
-    "/api/auth/organization/leave",
-    "/api/auth/organization/create-team",
-    "/api/auth/organization/create-role",
-    "/api/auth/update-user",
-    "/api/auth/change-email",
-    "/api/auth/delete-user",
-    "/api/auth/admin/set-role",
-  ]) {
+  // Pin the FULL deny set: this list is the only protection for /api/auth/*
+  // mutations against unverified sessions, so any removal or addition must
+  // fail here until the test is updated alongside the implementation.
+  assert.deepEqual(
+    [...BLOCKED_AUTH_MUTATIONS].sort(),
+    [
+      "/api/auth/admin/ban-user",
+      "/api/auth/admin/impersonate-user",
+      "/api/auth/admin/remove-user",
+      "/api/auth/admin/set-role",
+      "/api/auth/admin/unban-user",
+      "/api/auth/change-email",
+      "/api/auth/change-password",
+      "/api/auth/delete-user",
+      "/api/auth/organization/add-team-member",
+      "/api/auth/organization/cancel-invitation",
+      "/api/auth/organization/create",
+      "/api/auth/organization/create-role",
+      "/api/auth/organization/create-team",
+      "/api/auth/organization/delete",
+      "/api/auth/organization/delete-role",
+      "/api/auth/organization/invite-member",
+      "/api/auth/organization/leave",
+      "/api/auth/organization/remove-member",
+      "/api/auth/organization/remove-team",
+      "/api/auth/organization/remove-team-member",
+      "/api/auth/organization/set-active",
+      "/api/auth/organization/set-active-team",
+      "/api/auth/organization/update",
+      "/api/auth/organization/update-member-role",
+      "/api/auth/organization/update-role",
+      "/api/auth/organization/update-team",
+      "/api/auth/update-user",
+    ].sort(),
+  );
+  for (const path of BLOCKED_AUTH_MUTATIONS) {
     assert.equal(isAuthMutationBlockedForUnverified(path), true, path);
   }
 });
@@ -122,7 +143,6 @@ test("reads and invitation accept flows pass through to Better-Auth", () => {
     "/api/auth/organization/get-invitation",
     "/api/auth/organization/accept-invitation",
     "/api/auth/organization/reject-invitation",
-    "/api/auth/organization/set-active",
     "/api/auth/organization/list-members",
     "/api/auth/admin/stop-impersonating",
   ]) {
