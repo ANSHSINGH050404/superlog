@@ -49,8 +49,20 @@ export function AcceptInvitation() {
   );
 }
 
+export const PENDING_INVITE_STORAGE_KEY = "superlog.pending_invite_id";
+
 function InvitationAuthentication({ id }: { id: string }) {
   const continuationUrl = `${window.location.origin}/accept-invitation?id=${encodeURIComponent(id)}&join=1`;
+  // Remember the invite across the signup → verify-email detour (new users
+  // must verify before they can accept, which navigates away from this page).
+  // The verify page reads this back into a "Continue to invitation" link.
+  if (typeof window !== "undefined") {
+    try {
+      window.sessionStorage.setItem(PENDING_INVITE_STORAGE_KEY, id);
+    } catch {
+      /* storage unavailable — the inbox link still works */
+    }
+  }
 
   return (
     <CenteredShell>

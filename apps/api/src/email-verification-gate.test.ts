@@ -5,8 +5,10 @@ import { closeDb, db, runMigrations, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import {
   EMAIL_VERIFICATION_GRANDFATHER_CUTOFF,
+  isAuthMutationBlockedForUnverified,
   isEmailVerificationExempt,
   isGrandfatheredUnverifiedUser,
+  warnIfDefaultGrandfatherCutoff,
 } from "./email-verification-gate.js";
 
 const orgIds: string[] = [];
@@ -86,4 +88,58 @@ test("membership created after the cutoff is not grandfathered", async () => {
     createdAt: new Date(EMAIL_VERIFICATION_GRANDFATHER_CUTOFF.getTime() + 86_400_000),
   });
   assert.equal(await isGrandfatheredUnverifiedUser(user.id), false);
+});
+
+test("organization/admin mutations are blocked for unverified sessions", () => {
+  for (const path of [
+    "/api/auth/organization/create",
+    "/api/auth/organization/update",
+    "/api/auth/organization/delete",
+    "/api/auth/organization/invite-member",
+    "/api/auth/organization/cancel-invitation",
+    "/api/auth/organization/remove-member",
+    "/api/auth/organization/update-member-role",
+    "/api/auth/organization/leave",
+    "/api/auth/organization/create-team",
+    "/api/auth/organization/create-role",
+    "/api/auth/update-user",
+    "/api/auth/change-email",
+    "/api/auth/delete-user",
+    "/api/auth/admin/set-role",
+  ]) {
+    assert.equal(isAuthMutationBlockedForUnverified(path), true, path);
+  }
+});
+
+test("reads and invitation accept flows pass through to Better-Auth", () => {
+  for (const path of [
+    "/api/auth/get-session",
+    "/api/auth/sign-out",
+    "/api/auth/verify-email",
+    "/api/auth/send-verification-email",
+    "/api/auth/sign-in/email",
+    "/api/auth/sign-up/email",
+    "/api/auth/organization/get-invitation",
+    "/api/auth/organization/accept-invitation",
+    "/api/auth/organization/reject-invitation",
+    "/api/auth/organization/set-active",
+    "/api/auth/organization/list-members",
+    "/api/auth/admin/stop-impersonating",
+  ]) {
+    assert.equal(isAuthMutationBlockedForUnverified(path), false, path);
+  }
+});
+
+test("cutoff warning fires only when the env var is unset", () => {
+  const seen: string[] = [];
+  const hadEnv = process.env.EMAIL_VERIFICATION_GRANDFATHER_CUTOFF_ISO;
+  delete process.env.EMAIL_VERIFICATION_GRANDFATHER_CUTOFF_ISO;
+  try {
+    warnIfDefaultGrandfatherCutoff((message) => seen.push(message));
+    warnIfDefaultGrandfatherCutoff((message) => seen.push(message));
+    assert.equal(seen.length, 1);
+    assert.match(seen[0] ?? "", /EMAIL_VERIFICATION_GRANDFATHER_CUTOFF_ISO/);
+  } finally {
+    if (hadEnv !== undefined) process.env.EMAIL_VERIFICATION_GRANDFATHER_CUTOFF_ISO = hadEnv;
+  }
 });

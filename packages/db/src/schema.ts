@@ -552,6 +552,10 @@ export const orgMembers = pgTable(
   },
   (t) => ({
     uniq: uniqueIndex("org_members_org_user_idx").on(t.orgId, t.userId),
+    // Grandfather check in apps/api/src/email-verification-gate.ts filters on
+    // (user_id, created_at); the composite unique above leads with org_id and
+    // can't serve it. Without this, every unverified API request scans.
+    userCreatedIdx: index("org_members_user_created_idx").on(t.userId, t.createdAt),
   }),
 );
 

@@ -1,5 +1,6 @@
 import { type FormEvent, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { PENDING_INVITE_STORAGE_KEY } from "./AcceptInvitation.tsx";
 import { authClient, useSession } from "./auth-client.ts";
 
 // /verify-email — email-address confirmation surface (B-01 fix companion).
@@ -20,6 +21,25 @@ export function VerifyEmail() {
   const [submitting, setSubmitting] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(paramError);
+  // Invite continuation stashed by the accept-invitation page before the
+  // signup → verify detour (see PENDING_INVITE_STORAGE_KEY).
+  const [pendingInviteId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      return window.sessionStorage.getItem(PENDING_INVITE_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  });
+
+  function clearPendingInvite() {
+    if (typeof window === "undefined") return;
+    try {
+      window.sessionStorage.removeItem(PENDING_INVITE_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -62,12 +82,22 @@ export function VerifyEmail() {
 
       {verified ? (
         <div className="mt-7 flex flex-col items-center gap-3">
-          <Link
-            to="/app"
-            className="text-[13px] font-medium text-accent transition-colors hover:brightness-110"
-          >
-            Continue to the app →
-          </Link>
+          {pendingInviteId ? (
+            <Link
+              to={`/accept-invitation?id=${encodeURIComponent(pendingInviteId)}&join=1`}
+              onClick={clearPendingInvite}
+              className="text-[13px] font-medium text-accent transition-colors hover:brightness-110"
+            >
+              Continue to your invitation →
+            </Link>
+          ) : (
+            <Link
+              to="/app"
+              className="text-[13px] font-medium text-accent transition-colors hover:brightness-110"
+            >
+              Continue to the app →
+            </Link>
+          )}
         </div>
       ) : (
         <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-4">

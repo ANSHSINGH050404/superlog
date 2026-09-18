@@ -216,7 +216,13 @@ function AuthenticatedApp() {
   const projectRoot =
     orgSlug && projectSlug ? buildProjectPath({ orgSlug, projectSlug }, "/") : "/app";
   const app = (
-    <OnboardingGate>
+    <>
+      {/* Review P2: OnboardingGate replaces everything below with the wizard
+          for pre-org users, so an in-ribbon banner would never reach the
+          people who need it most (fresh unverified signups whose create-org
+          call is verification-gated). Render the banner above the gate. */}
+      {verifyEmailNeeded && <VerifyEmailBar email={data.user.email} />}
+      <OnboardingGate>
       <div className={APP_FRAME_CLASS}>
         <TopRibbon
           impersonating={impersonating}
@@ -272,7 +278,8 @@ function AuthenticatedApp() {
       </div>
       <CommandPalette />
       <McpInstallPill />
-    </OnboardingGate>
+      </OnboardingGate>
+    </>
   );
   const projectApp =
     orgSlug && projectSlug ? (
@@ -351,15 +358,21 @@ function VerifyEmailBar({ email }: { email: string }) {
   const [failed, setFailed] = useState(false);
   async function resend() {
     setFailed(false);
-    const result = await authClient.sendVerificationEmail({
-      email,
-      callbackURL: `${window.location.origin}/verify-email?verified=true`,
-    });
-    if (result.error) {
+    try {
+      const result = await authClient.sendVerificationEmail({
+        email,
+        callbackURL: `${window.location.origin}/verify-email?verified=true`,
+      });
+      if (result.error) {
+        setFailed(true);
+        return;
+      }
+      setResent(true);
+    } catch {
+      // Network/transport failure: surface retry state instead of an
+      // unhandled rejection with no feedback.
       setFailed(true);
-      return;
     }
-    setResent(true);
   }
   return (
     <div className="flex h-7 w-full items-center justify-center gap-2 bg-amber-400 px-3 text-[11px] text-black">

@@ -61,7 +61,8 @@ import {
 } from "./auth-client-ip.js";
 import { enforceGlobalAuthRateLimit } from "./auth-global-rate-limit.js";
 import { startAuthRateLimitCleanup } from "./auth-rate-limit-cleanup.js";
-import { recordAuthRateLimited } from "./auth-rate-limit-metrics.js";import { createDrizzleAuthRateLimitRepository } from "./auth-rate-limit-repository.js";
+import { recordAuthRateLimited } from "./auth-rate-limit-metrics.js";
+import { createDrizzleAuthRateLimitRepository } from "./auth-rate-limit-repository.js";
 import { auth } from "./auth.js";
 import { buildAutomationSettingsConflictUpdate } from "./automation-settings-update.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
@@ -77,8 +78,10 @@ import {
   resolveEffectiveReadProjectId,
 } from "./demo.js";
 import {
+  isAuthMutationBlockedForUnverified,
   isEmailVerificationExempt,
   isGrandfatheredUnverifiedUser,
+  warnIfDefaultGrandfatherCutoff,
 } from "./email-verification-gate.js";
 import { mountFeedbackAuthed, mountFeedbackPublic } from "./feedback.js";
 import { type GatewayVars, mountGateway } from "./gateway.js";
@@ -224,6 +227,7 @@ logger.info(
   { behindTrustedProxy: AUTH_BEHIND_TRUSTED_PROXY },
   "auth client IP trust mode configured",
 );
+warnIfDefaultGrandfatherCutoff((message) => logger.warn(message));
 const incidentLifecycle = createIncidentLifecycle(db);
 const sourceMapObjectStore = sourceMapObjectStoreFromEnv(process.env);
 
@@ -373,6 +377,20 @@ app.on(["POST", "GET"], "/api/auth/*", async (c) => {
     // path for the request that exhausts the aggregate bucket.
     recordAuthRateLimited("/api/auth/*", DEPLOYMENT_ENVIRONMENT);
     return globalLimitResponse;
+  }
+  // B-01 follow-up: this mount bypasses the session email-verification gate,
+  // so deny Better-Auth organization/admin mutations to unverified,
+  // non-grandfathered sessions here. Reads pass through (invitation
+  // get/accept/reject re-gate on verification inside Better-Auth itself);
+  // callers without a session fall through to Better-Auth's own 401.
+  if (isAuthMutationBlockedForUnverified(c.req.path)) {
+    const preSession = await auth.api.getSession({ headers: c.req.raw.headers });
+    if (preSession && preSession.user.emailVerified !== true) {
+      const grandfathered = await isGrandfatheredUnverifiedUser(preSession.user.id);
+      if (!grandfathered) {
+        return c.json({ error: "email_verification_required" }, 403);
+      }
+    }
   }
   const response = await auth.handler(requestWithAuthClientIp(c.req.raw, clientIp));
   if (response.status === 429) {
